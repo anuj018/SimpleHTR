@@ -96,7 +96,7 @@ class Preprocessor:
             img = np.zeros(self.img_size[::-1])
 
         # data augmentation
-        img = img.astype(np.float)
+        img = img.astype(float)
         if self.data_augmentation:
             # photometric data augmentation
             if random.random() < 0.25:
@@ -124,7 +124,7 @@ class Preprocessor:
             ty = tyc + np.random.uniform(-freedom_y, freedom_y)
 
             # map image into target image
-            M = np.float32([[fx, 0, tx], [0, fy, ty]])
+            M = np.array([[fx, 0, tx], [0, fy, ty]],dtype = float)
             target = np.ones(self.img_size[::-1]) * 255
             img = cv2.warpAffine(img, M, dsize=self.img_size, dst=target, borderMode=cv2.BORDER_TRANSPARENT)
 
@@ -154,7 +154,7 @@ class Preprocessor:
                 ty = (ht - h * f) / 2
 
             # map image into target image
-            M = np.float32([[f, 0, tx], [0, f, ty]])
+            M = np.array([[f, 0, tx], [0, f, ty]],dtype=float)
             target = np.ones([ht, wt]) * 255
             img = cv2.warpAffine(img, M, dsize=(wt, ht), dst=target, borderMode=cv2.BORDER_TRANSPARENT)
 

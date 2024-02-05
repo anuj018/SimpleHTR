@@ -10,6 +10,10 @@ from dataloader_iam import DataLoaderIAM, Batch
 from model import Model, DecoderType
 from preprocessor import Preprocessor
 
+import tensorflow as tf 
+from tensorflow.keras.layers import Dense
+print(tf.__version__)
+
 
 class FilePaths:
     """Filenames and paths to data."""
