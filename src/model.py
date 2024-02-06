@@ -9,7 +9,7 @@ from tensorflow.keras import layers,model
 from dataloader_iam import Batch
 
 # Disable eager mode
-tf.compat.v1.disable_eager_execution()
+# tf.compat.v1.disable_eager_execution()
 
 
 class DecoderType:
@@ -47,29 +47,95 @@ class Model(tf.keras.Model):
         stride_vals = pool_vals = [(2, 2), (2, 2), (1, 2), (1, 2), (1, 2)]
         num_layers = len(stride_vals)
 
-        self.conv_layers = tf.keras.Sequential()
+        self.conv_layers = []
         # Add Conv2D, MaxPooling2D, and BatchNormalization layers based on the configurations
         for kernel, features, strides in zip(kernel_vals, feature_vals, stride_vals):
-            self.conv_layers.add(tf.keras.layers.Conv2D(features, (kernel, kernel), padding='same', activation='relu'))
-            self.conv_layers.add(tf.keras.layers.MaxPooling2D(pool_size=strides))
-            self.conv_layers.add(tf.keras.layers.BatchNormalization())
+            self.conv_layers.append(tf.keras.layers.Conv2D(features, (kernel, kernel), padding='same', activation='relu'))
+            self.conv_layers.append(tf.keras.layers.MaxPooling2D(pool_size=strides))
+            self.conv_layers.append(tf.keras.layers.BatchNormalization())
 
         # Flatten the output to feed into the RNN
-        self.flatten = tf.keras.layers.Flatten()
+        # self.flatten = tf.keras.layers.Flatten()
 
          # RNN layer
-        self.rnn = tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(256, return_sequences=True))
+        self.rnn = [tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(256, return_sequences=True))]
 
-        # Dense layer to project RNN output to character probabilities
-        self.dense = tf.keras.layers.Dense(len(char_list) + 1)  # +1 for CTC blank character
+        # # Dense layer to project RNN output to character probabilities
+        # self.dense = tf.keras.layers.Dense(len(char_list) + 1)  # +1 for CTC blank character
+        
+        # Projection layer
+        self.projection_layer = tf.keras.layers.Conv2D(filters=len(char_list) + 1, kernel_size=(1, 1), padding='SAME')
 
 
+    @tf.function
     def call(self, inputs, training=None):
-        x = self.conv_layers(inputs, training=training)
-        x = self.flatten(x)
-        x = self.rnn(x)
-        x = self.dense(x)
-        return x
+        x = inputs
+        # CNN layers
+        for layer in self.conv_layers:
+            x = layer(x, training=training)
+        # No need to flatten for RNN input
+        
+        # RNN
+        x = self.rnn[0](x)  # Directly apply if only one layer
+        
+        # Projection to character probabilities
+        x = tf.expand_dims(x, 2)  # Necessary for Conv2D projection layer
+        x = self.projection_layer(x)
+        x = tf.squeeze(x, axis=2)  # Adjust to expected output shape
+    
+    
+    def model(self):
+        x = tf.keras.Input(shape=(None, None, 1))
+        return tf.keras.Model(inputs=[x], outputs=self.call(x))
+
+    @tf.function  # Compiles `compute_loss` into a static graph for faster execution
+    def compute_loss(self, labels, logits, logit_length):
+        """
+        Computes the CTC loss between the labels and the predictions of the network.
+
+        :param labels: The true labels as a dense Tensor of shape [batch_size, max_label_len].
+        :param logits: The logits output from the RNN of shape [batch_size, max_time, num_classes].
+        :param logit_length: The length of each logit sequence as a Tensor of shape [batch_size].
+        """
+        label_length = tf.math.count_nonzero(labels, axis=-1, dtype=tf.int32)
+        loss = tf.nn.ctc_loss(labels=labels,
+                              logits=logits,
+                              label_length=label_length,
+                              logit_length=logit_length,
+                              logits_time_major=False,
+                              blank_index=-1)
+        return tf.reduce_mean(loss)
+    
+    @tf.function  # Ensures `decode` runs in graph mode, optimizing the decoding process
+    def decode(self, logits, logit_length):
+        """
+        Decodes the logits using either greedy or beam search decoder.
+
+        :param logits: The logits output from the RNN of shape [batch_size, max_time, num_classes].
+        :param logit_length: The length of each logit sequence as a Tensor of shape [batch_size].
+        """
+        # Transpose needed if logits are not time major
+        logits = tf.transpose(logits, perm=[1, 0, 2])
+        if self.decoder_type == 'BestPath':
+            decoded, _ = tf.nn.ctc_greedy_decoder(inputs=logits, sequence_length=logit_length)
+        elif self.decoder_type == 'BeamSearch':
+            decoded, _ = tf.nn.ctc_beam_search_decoder(inputs=logits, sequence_length=logit_length, beam_width=50)
+        # Implement other decoders as needed
+        return decoded
+    
+    
+    @tf.function
+    def train_step(self, images, labels):
+        # Assuming labels are already in the sparse tensor format required by CTC loss
+        # and images are the inputs to your model
+        with tf.GradientTape() as tape:
+            logits = self(images, training=True)  # Obtain logits from the model
+            # Compute logit length based on your model's specifics, e.g., dividing image width by downsample factor
+            logit_length = tf.fill([tf.shape(images)[0]], tf.shape(logits)[1])
+            loss = self.compute_loss(labels, logits, logit_length)
+        gradients = tape.gradient(loss, self.trainable_variables)
+        self.optimizer.apply_gradients(zip(gradients, self.trainable_variables))
+        return loss
 
         self.setup_cnn()
         self.setup_rnn()
@@ -134,48 +200,48 @@ class Model(tf.keras.Model):
     #     self.rnn_out_3d = tf.squeeze(tf.nn.atrous_conv2d(value=concat, filters=kernel, rate=1, padding='SAME'),
     #                                  axis=[2])
 
-    def setup_ctc(self) -> None:
-        """Create CTC loss and decoder."""
-        # BxTxC -> TxBxC
-        self.ctc_in_3d_tbc = tf.transpose(a=self.rnn_out_3d, perm=[1, 0, 2])
-        # ground truth text as sparse tensor
-        self.gt_texts = tf.SparseTensor(tf.compat.v1.placeholder(tf.int64, shape=[None, 2]),
-                                        tf.compat.v1.placeholder(tf.int32, [None]),
-                                        tf.compat.v1.placeholder(tf.int64, [2]))
+    # def setup_ctc(self) -> None:
+    #     """Create CTC loss and decoder."""
+    #     # BxTxC -> TxBxC
+    #     self.ctc_in_3d_tbc = tf.transpose(a=self.rnn_out_3d, perm=[1, 0, 2])
+    #     # ground truth text as sparse tensor
+    #     self.gt_texts = tf.SparseTensor(tf.compat.v1.placeholder(tf.int64, shape=[None, 2]),
+    #                                     tf.compat.v1.placeholder(tf.int32, [None]),
+    #                                     tf.compat.v1.placeholder(tf.int64, [2]))
 
-        # calc loss for batch
-        self.seq_len = tf.compat.v1.placeholder(tf.int32, [None])
-        self.loss = tf.reduce_mean(
-            input_tensor=tf.compat.v1.nn.ctc_loss(labels=self.gt_texts, inputs=self.ctc_in_3d_tbc,
-                                                  sequence_length=self.seq_len,
-                                                  ctc_merge_repeated=True))
+    #     # calc loss for batch
+    #     self.seq_len = tf.compat.v1.placeholder(tf.int32, [None])
+    #     self.loss = tf.reduce_mean(
+    #         input_tensor=tf.compat.v1.nn.ctc_loss(labels=self.gt_texts, inputs=self.ctc_in_3d_tbc,
+    #                                               sequence_length=self.seq_len,
+    #                                               ctc_merge_repeated=True))
 
-        # calc loss for each element to compute label probability
-        self.saved_ctc_input = tf.compat.v1.placeholder(tf.float32,
-                                                        shape=[None, None, len(self.char_list) + 1])
-        self.loss_per_element = tf.compat.v1.nn.ctc_loss(labels=self.gt_texts, inputs=self.saved_ctc_input,
-                                                         sequence_length=self.seq_len, ctc_merge_repeated=True)
+    #     # calc loss for each element to compute label probability
+    #     self.saved_ctc_input = tf.compat.v1.placeholder(tf.float32,
+    #                                                     shape=[None, None, len(self.char_list) + 1])
+    #     self.loss_per_element = tf.compat.v1.nn.ctc_loss(labels=self.gt_texts, inputs=self.saved_ctc_input,
+    #                                                      sequence_length=self.seq_len, ctc_merge_repeated=True)
 
-        # best path decoding or beam search decoding
-        if self.decoder_type == DecoderType.BestPath:
-            self.decoder = tf.nn.ctc_greedy_decoder(inputs=self.ctc_in_3d_tbc, sequence_length=self.seq_len)
-        elif self.decoder_type == DecoderType.BeamSearch:
-            self.decoder = tf.nn.ctc_beam_search_decoder(inputs=self.ctc_in_3d_tbc, sequence_length=self.seq_len,
-                                                         beam_width=50)
-        # word beam search decoding (see https://github.com/githubharald/CTCWordBeamSearch)
-        elif self.decoder_type == DecoderType.WordBeamSearch:
-            # prepare information about language (dictionary, characters in dataset, characters forming words)
-            chars = ''.join(self.char_list)
-            word_chars = open('../model/wordCharList.txt').read().splitlines()[0]
-            corpus = open('../data/corpus.txt').read()
+    #     # best path decoding or beam search decoding
+    #     if self.decoder_type == DecoderType.BestPath:
+    #         self.decoder = tf.nn.ctc_greedy_decoder(inputs=self.ctc_in_3d_tbc, sequence_length=self.seq_len)
+    #     elif self.decoder_type == DecoderType.BeamSearch:
+    #         self.decoder = tf.nn.ctc_beam_search_decoder(inputs=self.ctc_in_3d_tbc, sequence_length=self.seq_len,
+    #                                                      beam_width=50)
+    #     # word beam search decoding (see https://github.com/githubharald/CTCWordBeamSearch)
+    #     elif self.decoder_type == DecoderType.WordBeamSearch:
+    #         # prepare information about language (dictionary, characters in dataset, characters forming words)
+    #         chars = ''.join(self.char_list)
+    #         word_chars = open('../model/wordCharList.txt').read().splitlines()[0]
+    #         corpus = open('../data/corpus.txt').read()
 
-            # decode using the "Words" mode of word beam search
-            from word_beam_search import WordBeamSearch
-            self.decoder = WordBeamSearch(50, 'Words', 0.0, corpus.encode('utf8'), chars.encode('utf8'),
-                                          word_chars.encode('utf8'))
+    #         # decode using the "Words" mode of word beam search
+    #         from word_beam_search import WordBeamSearch
+    #         self.decoder = WordBeamSearch(50, 'Words', 0.0, corpus.encode('utf8'), chars.encode('utf8'),
+    #                                       word_chars.encode('utf8'))
 
-            # the input to the decoder must have softmax already applied
-            self.wbs_input = tf.nn.softmax(self.ctc_in_3d_tbc, axis=2)
+    #         # the input to the decoder must have softmax already applied
+    #         self.wbs_input = tf.nn.softmax(self.ctc_in_3d_tbc, axis=2)
 
     def setup_tf(self) -> Tuple[tf.compat.v1.Session, tf.compat.v1.train.Saver]:
         """Initialize TF."""
