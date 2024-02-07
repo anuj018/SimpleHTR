@@ -4,7 +4,7 @@ from typing import List, Tuple
 
 import numpy as np
 import tensorflow as tf
-from tensorflow.keras import layers,model
+from tensorflow.keras import layers,models
 
 from dataloader_iam import Batch
 
@@ -38,8 +38,6 @@ class Model(tf.keras.Model):
         # Whether to use normalization over a batch or a population
         # self.is_train = tf.compat.v1.placeholder(tf.bool, name='is_train')
 
-        # input image batch
-        # self.input_imgs = tf.compat.v1.placeholder(tf.float32, shape=(None, None, None))
 
         # setup CNN, RNN and CTC
         kernel_vals = [5, 5, 3, 3, 3]
@@ -47,18 +45,29 @@ class Model(tf.keras.Model):
         stride_vals = pool_vals = [(2, 2), (2, 2), (1, 2), (1, 2), (1, 2)]
         num_layers = len(stride_vals)
 
+        # input_imgs = layers.Input(shape=(None, None, 1), dtype=tf.float32)  # Assuming single-channel images
+
+        # model = models.Sequential()
+        # model.add(input_imgs)
+
         self.conv_layers = []
         # Add Conv2D, MaxPooling2D, and BatchNormalization layers based on the configurations
-        for kernel, features, strides in zip(kernel_vals, feature_vals, stride_vals):
-            self.conv_layers.append(tf.keras.layers.Conv2D(features, (kernel, kernel), padding='same', activation='relu'))
-            self.conv_layers.append(tf.keras.layers.MaxPooling2D(pool_size=strides))
+        for i in range(num_layers):
+            self.conv_layers.append((tf.keras.layers.Conv2D(feature_vals[i+1], kernel_size = kernel_vals[i], padding='same', activation='relu')))
+            self.conv_layers.append(tf.keras.layers.MaxPooling2D(pool_size=stride_vals[i],strides = stride_vals[i]))
             self.conv_layers.append(tf.keras.layers.BatchNormalization())
+                                    
+        # for kernel, features, strides in zip(kernel_vals, feature_vals, stride_vals):
+        #     self.conv_layers.append(tf.keras.layers.Conv2D(features, (kernel, kernel), padding='same', activation='relu'))
+        #     self.conv_layers.append(tf.keras.layers.MaxPooling2D(pool_size=strides))
+        #     self.conv_layers.append(tf.keras.layers.BatchNormalization())
 
         # Flatten the output to feed into the RNN
         # self.flatten = tf.keras.layers.Flatten()
 
          # RNN layer
-        self.rnn = [tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(256, return_sequences=True))]
+        self.rnn_layers = [tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(256, return_sequences=True)),
+                    tf.keras.layers.Bidirectional(tf.keras.layers.LSTM(256, return_sequences=True)),]
 
         # # Dense layer to project RNN output to character probabilities
         # self.dense = tf.keras.layers.Dense(len(char_list) + 1)  # +1 for CTC blank character
@@ -73,10 +82,14 @@ class Model(tf.keras.Model):
         # CNN layers
         for layer in self.conv_layers:
             x = layer(x, training=training)
+    
+        batch_size, width, height, channels = tf.shape(x)[0], tf.shape(x)[1], tf.shape(x)[2], tf.shape(x)[3]
+        x = tf.reshape(x, [batch_size, width, height * channels])  # New shape: [batch_size, timesteps, features]
         # No need to flatten for RNN input
         
         # RNN
-        x = self.rnn[0](x)  # Directly apply if only one layer
+        for layer in self.rnn_layers:
+            x = layer(x)
         
         # Projection to character probabilities
         x = tf.expand_dims(x, 2)  # Necessary for Conv2D projection layer
@@ -286,7 +299,7 @@ class Model(tf.keras.Model):
                 indices.append([batchElement, i])
                 values.append(label)
 
-        return indices, values, shape
+        return tf.SparseTensor(indices=indices, values=values, dense_shape=sparse_shape)
 
     def decoder_output_to_text(self, ctc_output: tuple, batch_size: int) -> List[str]:
         """Extract texts from output of CTC decoder."""
@@ -400,3 +413,12 @@ class Model(tf.keras.Model):
         """Save model to file."""
         self.snap_ID += 1
         self.saver.save(self.sess, '../model/snapshot', global_step=self.snap_ID)
+
+
+# # Example usage
+# char_list = ['a', 'b', 'c', 'd']  # Example character list for OCR
+# model = Model(char_list=char_list)
+
+# # Print model summary to verify architecture
+# model.build(input_shape=(None, 128, 32, 1))  # Example input shape, adjust as needed
+# model.summary()
