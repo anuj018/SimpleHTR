@@ -77,8 +77,8 @@ class Model(tf.keras.Model):
         # Projection layer
         self.projection_layer = tf.keras.layers.Conv2D(filters=len(char_list) + 1, kernel_size=(1, 1), padding='SAME')
 
-        self.build((None, None, None, 1))  # Specify input shape (dynamic shapes for height and width)
-        self.compile()  # Ensure the model is compiled (might be optional depending on your setup)
+        # self.build((None, None, None, 1))  # Specify input shape (dynamic shapes for height and width)
+        # self.compile()  # Ensure the model is compiled (might be optional depending on your setup)
 
         if must_restore:
             self.restore_model()
@@ -220,7 +220,7 @@ class Model(tf.keras.Model):
                 indices.append([batchElement, i])
                 values.append(label)
 
-        return tf.SparseTensor(indices=indices, values=values, dense_shape=sparse_shape)
+        return tf.SparseTensor(indices=indices, values=values, dense_shape=shape)
 
     @staticmethod
     def dump_nn_output(rnn_output: np.ndarray) -> None:
@@ -330,10 +330,10 @@ class Model(tf.keras.Model):
         self.saver.save(self.sess, '../model/snapshot', global_step=self.snap_ID)
 
 
-# # Example usage
-# char_list = ['a', 'b', 'c', 'd']  # Example character list for OCR
-# model = Model(char_list=char_list)
+# Example usage
+char_list = ['a', 'b', 'c', 'd']  # Example character list for OCR
+model = Model(char_list=char_list)
 
-# # Print model summary to verify architecture
-# model.build(input_shape=(None, 128, 32, 1))  # Example input shape, adjust as needed
-# model.summary()
+# Print model summary to verify architecture
+model.build(input_shape=(None, 128, 32, 1))  # Example input shape, adjust as needed
+model.summary()
