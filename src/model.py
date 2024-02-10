@@ -119,11 +119,26 @@ class Model(tf.keras.Model):
         x = tf.expand_dims(x, 2)  # Necessary for Conv2D projection layer
         x = self.projection_layer(x)
         x = tf.squeeze(x, axis=2)  # Adjust to expected output shape
+        return x  
     
     
     def model(self):
         x = tf.keras.Input(shape=(None, None, 1))
         return tf.keras.Model(inputs=[x], outputs=self.call(x))
+    
+    @tf.function
+    def compute_label_lengths_from_sparse(self,sparse_labels):
+        # Get the maximum label length for each batch by looking at the last index in the sparse tensor for each batch element.
+        batch_size = sparse_labels.dense_shape[0]
+        # Initialize a tensor to hold the count for each batch element
+        label_length = tf.zeros([batch_size], dtype=tf.int32)
+        
+        # Update counts based on the indices of the sparse tensor
+        for i in range(tf.shape(sparse_labels.indices)[0]):
+            batch_index = sparse_labels.indices[i][0]
+            label_length = tf.tensor_scatter_nd_update(label_length, [[batch_index]], [sparse_labels.indices[i][1] + 1])
+
+        return label_length
 
     @tf.function  # Compiles `compute_loss` into a static graph for faster execution
     def compute_loss(self, labels, logits, logit_length):
@@ -134,7 +149,7 @@ class Model(tf.keras.Model):
         :param logits: The logits output from the RNN of shape [batch_size, max_time, num_classes].
         :param logit_length: The length of each logit sequence as a Tensor of shape [batch_size].
         """
-        label_length = tf.math.count_nonzero(labels, axis=-1, dtype=tf.int32)
+        label_length =self.compute_label_lengths_from_sparse(labels)
         loss = tf.nn.ctc_loss(labels=labels,
                               logits=logits,
                               label_length=label_length,
@@ -184,16 +199,25 @@ class Model(tf.keras.Model):
         # map labels to chars for all batch elements
         return [''.join([self.char_list[c] for c in labelStr]) for labelStr in label_strs]
     
-    
     @tf.function
-    def train_batch(self, batch:Batch):
-        images,labels = batch.imgs,batch.gt_texts
+    def train_batch(self, batch):
+        print(type(batch))
+        images = batch.imgs
+        tensor_list = batch.imgs
+        print(f'tensor list dtype is {images[0].dtype}')
+        tensor_list = [tf.cast(tensor, dtype=tf.float32) for tensor in tensor_list] 
+        tensor_list_with_channel = [tf.expand_dims(tensor, -1) for tensor in tensor_list]
+        images_tensor = tf.stack(tensor_list_with_channel, axis=0)
+        print(images_tensor.shape)  # This should print: (batch_size, 128, 32, 1)
+        labels = batch.gt_texts
+        
         # max_text_len = images[0].shape[0] //4
         sparse_labels = self.to_sparse(labels)
         # Assuming labels are already in the sparse tensor format required by CTC loss
         # and images are the inputs to your model
         with tf.GradientTape() as tape:
-            logits = self(images, training=True)  # Obtain logits from the model (batch_size, W/32, C + 1)
+            logits = self(images_tensor, training=True) 
+            print(f'The Shape and datatype of logits is {logits.shape} and {logits.dtype}' ) # Obtain logits from the model (batch_size, W/4, C + 1)
             # Compute logit length based on your model's specifics, e.g., dividing image width by downsample factor
             logit_length = tf.fill([tf.shape(images)[0]], tf.shape(logits)[1])
             loss = self.compute_loss(sparse_labels, logits, logit_length)
@@ -219,8 +243,11 @@ class Model(tf.keras.Model):
             for i, label in enumerate(label_str):
                 indices.append([batchElement, i])
                 values.append(label)
+        sparse_tensor_to_return = tf.SparseTensor(indices=indices, values=values, dense_shape=shape)
+        print(f'shape and datatype of sparse_tensor_to_return is {sparse_tensor_to_return.shape} and {sparse_tensor_to_return.dtype}')
 
         return tf.SparseTensor(indices=indices, values=values, dense_shape=shape)
+    
 
     @staticmethod
     def dump_nn_output(rnn_output: np.ndarray) -> None:

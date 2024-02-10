@@ -170,6 +170,7 @@ class Preprocessor:
             batch = self._simulate_text_line(batch)
 
         res_imgs = [self.process_img(img) for img in batch.imgs]
+        print(f'I am in process_batch function and the shape of the image is {res_imgs[0].shape}')
         max_text_len = res_imgs[0].shape[0] // 4
         res_gt_texts = [self._truncate_label(gt_text, max_text_len) for gt_text in batch.gt_texts]
         return Batch(res_imgs, res_gt_texts, batch.batch_size)
