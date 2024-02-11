@@ -184,6 +184,7 @@ def main():
 
         # when in line mode, take care to have a whitespace in the char list
         char_list = loader.char_list
+        print("value of charecter list in the main is ",char_list)
         if args.line_mode and ' ' not in char_list:
             char_list = [' '] + char_list
 

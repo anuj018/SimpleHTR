@@ -34,7 +34,8 @@ class Model(tf.keras.Model):
         self.decoder_type = decoder_type
         self.must_restore = must_restore
         self.snap_ID = 0
-        self.optimizer = tf.keras.optimizers.Adam()
+        self.optimizer = tf.keras.optimizers.Adam(lr = 0.001)
+        print("-----------------------", self.char_list)
 
 
         # Whether to use normalization over a batch or a population
@@ -158,7 +159,7 @@ class Model(tf.keras.Model):
                               blank_index=-1)
         return tf.reduce_mean(loss)
     
-    @tf.function  # Ensures `decode` runs in graph mode, optimizing the decoding process
+    # @tf.function  # Ensures `decode` runs in graph mode, optimizing the decoding process
     def decode(self, logits, logit_length):
         """
         Decodes the logits using either greedy or beam search decoder.
@@ -167,15 +168,21 @@ class Model(tf.keras.Model):
         :param logit_length: The length of each logit sequence as a Tensor of shape [batch_size].
         """
         # Transpose needed if logits are not time major
+        # self.decoded = None
+        decoded = None  # Or appropriate default value based on expected type
         logits = tf.transpose(logits, perm=[1, 0, 2])
-        if self.decoder_type == 'BestPath':
+        print(f"-----------------------------------------{self.decoder_type}")
+        if self.decoder_type == 0:
             decoded, _ = tf.nn.ctc_greedy_decoder(inputs=logits, sequence_length=logit_length)
-        elif self.decoder_type == 'BeamSearch':
+        elif self.decoder_type == 1:
             decoded, _ = tf.nn.ctc_beam_search_decoder(inputs=logits, sequence_length=logit_length, beam_width=50)
         # Implement other decoders as needed
+                # Ensure there's an `else` block if there are other decoder types or a catch-all is needed
+        else:
+            print("Warning: No matching decoder type found, or implement default handling here")
         return decoded
     
-    def decoder_output_to_text(self, ctc_output: tuple, batch_size: int) -> List[str]:
+    def decoder_output_to_text(self, ctc_output, batch_size) -> List[str]:
         """Extract texts from output of CTC decoder."""
 
         # word beam search: already contains label strings
@@ -185,7 +192,9 @@ class Model(tf.keras.Model):
         # TF decoders: label strings are contained in sparse tensor
         else:
             # ctc returns tuple, first element is SparseTensor
-            decoded = ctc_output[0][0]
+            decoded = ctc_output[0]
+            # decoded = tf.sparse.to_dense(ctc_output[0], default_value=-1).numpy()
+
 
             # contains string of labels for each batch element
             label_strs = [[] for _ in range(batch_size)]
@@ -197,18 +206,17 @@ class Model(tf.keras.Model):
                 label_strs[batch_element].append(label)
 
         # map labels to chars for all batch elements
-        return [''.join([self.char_list[c] for c in labelStr]) for labelStr in label_strs]
+        print("CHARECTER LIST IS ",self.char_list)
+        self.char_list = [' ', '!', '"', '#', '&', "'", '(', ')', '*', ',', '-', '.', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', ':', ';', '?', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'Y', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
+        return [''.join([self.char_list[c] if c < len(self.char_list) else '<UNK>' for c in labelStr]) for labelStr in label_strs]
     
     @tf.function
     def train_batch(self, batch):
-        print(type(batch))
         images = batch.imgs
         tensor_list = batch.imgs
-        print(f'tensor list dtype is {images[0].dtype}')
         tensor_list = [tf.cast(tensor, dtype=tf.float32) for tensor in tensor_list] 
         tensor_list_with_channel = [tf.expand_dims(tensor, -1) for tensor in tensor_list]
-        images_tensor = tf.stack(tensor_list_with_channel, axis=0)
-        print(images_tensor.shape)  # This should print: (batch_size, 128, 32, 1)
+        images_tensor = tf.stack(tensor_list_with_channel, axis=0)  # This should print: (batch_size, 128, 32, 1)
         labels = batch.gt_texts
         
         # max_text_len = images[0].shape[0] //4
@@ -216,8 +224,8 @@ class Model(tf.keras.Model):
         # Assuming labels are already in the sparse tensor format required by CTC loss
         # and images are the inputs to your model
         with tf.GradientTape() as tape:
-            logits = self(images_tensor, training=True) 
-            print(f'The Shape and datatype of logits is {logits.shape} and {logits.dtype}' ) # Obtain logits from the model (batch_size, W/4, C + 1)
+            logits = self(images_tensor, training=True)
+ # Obtain logits from the model (batch_size, W/4, C + 1)
             # Compute logit length based on your model's specifics, e.g., dividing image width by downsample factor
             logit_length = tf.fill([tf.shape(images)[0]], tf.shape(logits)[1])
             loss = self.compute_loss(sparse_labels, logits, logit_length)
@@ -244,8 +252,6 @@ class Model(tf.keras.Model):
                 indices.append([batchElement, i])
                 values.append(label)
         sparse_tensor_to_return = tf.SparseTensor(indices=indices, values=values, dense_shape=shape)
-        print(f'shape and datatype of sparse_tensor_to_return is {sparse_tensor_to_return.shape} and {sparse_tensor_to_return.dtype}')
-
         return tf.SparseTensor(indices=indices, values=values, dense_shape=shape)
     
 
@@ -267,20 +273,37 @@ class Model(tf.keras.Model):
             with open(fn, 'w') as f:
                 f.write(csv)
 
+
     def infer_batch(self, batch: Batch, calc_probability: bool = False, probability_of_gt: bool = False):
         eval_list = []
-        logits = self(batch.imgs, training=False)
-        logit_length = tf.fill([tf.shape(batch.imgs)[0]], tf.shape(logits)[1])
-        self.decoder = self.decode(self, logits, logit_length)
+        images = batch.imgs
+        print(len(images))
+        tensor_list = batch.imgs
+        tensor_list = [tf.cast(tensor, dtype=tf.float32) for tensor in tensor_list] 
+        tensor_list_with_channel = [tf.expand_dims(tensor, -1) for tensor in tensor_list]
+        images_tensor = tf.stack(tensor_list_with_channel, axis=0)  # This should print: (batch_size, 128, 32, 1)
+        labels = batch.gt_texts
+        # max_text_len = images[0].shape[0] //4
+        sparse_labels = self.to_sparse(labels)
+        logits = self(images_tensor, training=False)
+        print(f"logits shape is {logits.shape}") 
+        print(f"logits 0 is {logits[0]}")
+        
+        logit_length = tf.fill([tf.shape(images)[0]], tf.shape(logits)[1])
+        decoded = self.decode(logits, logit_length)
+        print('decoded output is ', decoded) 
+        # print(decoded[0])
+        batch_size = logits.shape[0]  # Assuming logits is a tensor of shape [batch_size, max_time, num_classes]
+        texts = model.decoder_output_to_text(ctc_output=decoded, batch_size=batch_size)
          # Convert decoded indices to text
-        texts = ["".join([self.char_list[i] for i in text]) for text in self.decoder.numpy()]
-        # if self.decoder_type == DecoderType.WordBeamSearch:
-        #     eval_list.append(self.wbs_input)
+        # if decoded is not None:  # Ensure decoded is not None
+        #     # Ensure operation is outside @tf.function
+        #     texts = ["".join([self.char_list[i.numpy()] for i in text.values]) for text in decoded]
         # else:
-        #     eval_list.append(self.decoder)
+        #     texts = []
         probabilities = None
         if calc_probability:
-            sparse_labels = self.to_sparse(batch.gt_texts if probability_of_gt else self.decode(logits))  # Placeholder for actual conversion
+            sparse_labels = self.to_sparse(labels if probability_of_gt else self.decode(logits,logit_length))  # Placeholder for actual conversion
             logit_length = tf.fill([tf.shape(logits)[0]], tf.shape(logits)[1])
             
             # Calculate loss (used as negative log probability)
