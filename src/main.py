@@ -24,13 +24,13 @@ class FilePaths:
 
 def get_img_height() -> int:
     """Fixed height for NN."""
-    return 32
+    return 80
 
 
 def get_img_size(line_mode: bool = False) -> Tuple[int, int]:
     """Height is fixed for NN, width is set according to training mode (single words or text lines)."""
     if line_mode:
-        return 256, get_img_height()
+        return 640, get_img_height()
     return 128, get_img_height()
 
 
@@ -47,7 +47,7 @@ def char_list_from_file() -> List[str]:
 
 def train(model: Model,
           loader: DataLoaderIAM,
-          line_mode: bool,
+          line_mode: bool = True,
           early_stopping: int = 25) -> None:
     """Trains NN."""
     epoch = 0  # number of training epochs since start
@@ -57,7 +57,7 @@ def train(model: Model,
     train_loss_in_epoch = []
     average_train_loss = []
 
-    preprocessor = Preprocessor(get_img_size(line_mode), data_augmentation=True, line_mode=line_mode)
+    preprocessor = Preprocessor(get_img_size(line_mode), data_augmentation=False, line_mode=line_mode,dynamic_width=True)
     best_char_error_rate = float('inf')  # best validation character error rate
     no_improvement_since = 0  # number of epochs no improvement of character error rate occurred
     # stop training after this number of epochs without improvement
@@ -71,7 +71,17 @@ def train(model: Model,
         while loader.has_next():
             iter_info = loader.get_iterator_info()
             batch = loader.get_next()
+            images = batch.imgs
+            demo_img = cv2.imread('c04-110-00(2).jpg')
+            # visualize_image(demo_img, title = 'Example Image of 320,40 size')
+            # visualize_image(images[0],title = 'Image before preprocessing')
+            # print(f'Shape before pre-processing is {images[0].shape}')
+            # visualize_image(images[0])
             batch = preprocessor.process_batch(batch)
+            # visualize_image(batch.imgs[0],title = 'Image after preprocessing')
+            # print(f'Shape after pre-processing is {batch.imgs[0].shape}')
+            # visualize_preprocessed_opencv_images(images, num_images=1, cols=2)
+            # visualize_image(images[0])
             loss = model.train_batch(batch)
             print(f'Epoch: {epoch} Batch: {iter_info[0]}/{iter_info[1]} Loss: {loss}')
             train_loss_in_epoch.append(loss)
@@ -108,7 +118,7 @@ def validate(model: Model, loader: DataLoaderIAM, line_mode: bool) -> Tuple[floa
     """Validates NN."""
     print('Validate NN')
     loader.validation_set()
-    preprocessor = Preprocessor(get_img_size(line_mode), line_mode=line_mode)
+    preprocessor = Preprocessor(get_img_size(line_mode), line_mode=True,data_augmentation=False,dynamic_width=True)
     num_char_err = 0
     num_char_total = 0
     num_word_ok = 0
@@ -117,7 +127,12 @@ def validate(model: Model, loader: DataLoaderIAM, line_mode: bool) -> Tuple[floa
         iter_info = loader.get_iterator_info()
         print(f'Batch: {iter_info[0]} / {iter_info[1]}')
         batch = loader.get_next()
+        images = batch.imgs
+        visualize_image(images[0],title = 'Image before preprocessing')
         batch = preprocessor.process_batch(batch)
+        images = batch.imgs
+        # visualize_preprocessed_opencv_images(images, num_images=2, cols=2)
+        visualize_image(images[0],title = 'Image after preprocessing')
         recognized, _ = model.infer_batch(batch)
 
         print('Ground truth -> Recognized')
@@ -136,13 +151,89 @@ def validate(model: Model, loader: DataLoaderIAM, line_mode: bool) -> Tuple[floa
     print(f'Character error rate: {char_error_rate * 100.0}%. Word accuracy: {word_accuracy * 100.0}%.')
     return char_error_rate, word_accuracy
 
+import matplotlib.pyplot as plt
+import numpy as np
+import cv2
+
+def visualize_image(image,title):
+    """
+    Visualizes a single preprocessed OpenCV-compatible image.
+    
+    Parameters:
+    - image: a preprocessed OpenCV-compatible image (numpy array).
+    """
+    # Rescale the image from [-0.5, 0.5] back to [0, 1] for visualization
+    # image = image.astype(float)
+    img_normalized = (image + 0.5).clip(0, 1)
+    if img_normalized is None:
+        print(f"Failed to load image")
+    
+    # if img_normalized.ndim == 3:
+    #     # If the image has 3 channels, convert from BGR to RGB
+    #     img_normalized = cv2.cvtColor(img_normalized, cv2.COLOR_BGR2RGB)
+    # elif img_normalized.ndim == 2:
+    #     # For grayscale images, ensure correct dimensions for imshow
+    #     img_normalized = np.squeeze(img_normalized)
+    # if img_normalized.dtype != 'uint8':
+        # img_normalized = img_normalized.astype('uint8')
+
+    
+    # Display the image
+    plt.imshow(image)
+    
+    # plt.imshow(image)
+    plt.axis('off')  # Hide the axis
+    plt.title(title)
+    plt.show()
+
+def visualize_preprocessed_opencv_images(images, num_images=5, cols=5):
+    """
+    Visualizes a subset of preprocessed OpenCV-compatible images.
+    
+    Parameters:
+    - images: a list of preprocessed OpenCV-compatible images (numpy arrays).
+    - num_images: the number of images to display.
+    - cols: the number of columns in the plot.
+    """
+    # Determine the number of rows needed
+    num_images = min(len(images), num_images)
+    rows = np.ceil(num_images / cols).astype(int)
+    
+    # Set up the matplotlib figure
+    fig, axes = plt.subplots(rows, cols, figsize=(cols * 2, rows * 2))
+    axes = axes.flatten()
+    
+    for i in range(num_images):
+        img = images[i]
+        # Rescale images from [-0.5, 0.5] back to [0, 1] for visualization
+        img = (img + 0.5).clip(0, 1)
+        
+        if img.ndim == 3:
+            # If the image has 3 channels, convert from BGR to RGB
+            img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        elif img.ndim == 2:
+            # For grayscale images, ensure correct dimensions for imshow
+            img = np.squeeze(img)
+        
+        axes[i].imshow(img, cmap='gray')
+        axes[i].axis('off')
+    
+    # Turn off axes for any unused subplots
+    for i in range(num_images, len(axes)):
+        axes[i].axis('off')
+    
+    plt.tight_layout()
+    plt.show()
+
+
+
 
 def infer(model: Model, fn_img: Path) -> None:
     """Recognizes text in image provided by file path."""
     img = cv2.imread(fn_img, cv2.IMREAD_GRAYSCALE)
     assert img is not None
 
-    preprocessor = Preprocessor(get_img_size(), dynamic_width=True, padding=16)
+    preprocessor = Preprocessor(get_img_size(), dynamic_width=False, padding=16)
     img = preprocessor.process_img(img)
 
     batch = Batch([img], None, 1)

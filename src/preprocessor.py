@@ -88,10 +88,12 @@ class Preprocessor:
 
         return Batch(res_imgs, res_gt_texts, batch.batch_size)
 
-    def process_img(self, img: np.ndarray) -> np.ndarray:
+    def process_img(self, image: np.ndarray) -> np.ndarray:
         """Resize to target size, apply data augmentation."""
 
         # there are damaged files in IAM dataset - just use black image instead
+        # print(f"IMAGE SIZE BEFORE PREPROCESSING IS {img.shape}")
+        img = image.copy()
         if img is None:
             img = np.zeros(self.img_size[::-1])
 
@@ -142,24 +144,39 @@ class Preprocessor:
                 ht = self.img_size[1]
                 h, w = img.shape
                 f = ht / h
-                wt = int(f * w + self.padding)
+                # print(f'scale factor is {f}')
+                # print(f'padding valus is {self.padding}')
+                # print(f"Original width: {w}, Target width after scaling: {f * w}")
+                wt = min(int(f * w + self.padding),640)
                 wt = wt + (4 - wt) % 4
                 tx = (wt - w * f) / 2
                 ty = 0
             else:
-                wt, ht = self.img_size
-                h, w = img.shape
-                f = min(wt / w, ht / h)
-                tx = (wt - w * f) / 2
-                ty = (ht - h * f) / 2
+
+                # Calculate new width while maintaining aspect ratio
+                scale_factor = self.img_size[1] / img.shape[0]
+                # print(f'scale factor is {scale_factor}')
+                new_width = int(img.shape[1] * scale_factor)
+                # print(new_width)
+
+                # Resize image based on the scale factor
+                img = cv2.resize(img, (new_width, self.img_size[1]), interpolation=cv2.INTER_AREA)
+
+                # Calculate padding to add to the left and right to reach the desired width
+                padding_left = (self.img_size[0] - new_width) // 2
+                padding_right = self.img_size[0] - new_width - padding_left
+
+                # Add padding to the left and right
+                img = cv2.copyMakeBorder(img, 0, 0, padding_left, padding_right, cv2.BORDER_CONSTANT, value=[255, 255, 255])
 
             # map image into target image
             M = np.array([[f, 0, tx], [0, f, ty]],dtype=float)
             target = np.ones([ht, wt]) * 255
             img = cv2.warpAffine(img, M, dsize=(wt, ht), dst=target, borderMode=cv2.BORDER_TRANSPARENT)
+            
 
-        # transpose for TF
-        img = cv2.transpose(img)
+        # img = cv2.transpose(img)
+
 
         # convert to range [-1, 1]
         img = img / 255 - 0.5
@@ -170,10 +187,24 @@ class Preprocessor:
             batch = self._simulate_text_line(batch)
 
         res_imgs = [self.process_img(img) for img in batch.imgs]
+        max_width = max(img.shape[1] for img in res_imgs)
+        # print("Preprocessed image range is :")
+        # print(res_imgs[0].min(), res_imgs[0].max())
+# Find the maximum width in the batch
+        max_width = max(img.shape[1] for img in res_imgs)
+
+        # Pad each image to this maximum width
+        padded_images = []
+        for img in res_imgs:
+            padding_needed = max_width - img.shape[1]
+            left_pad = padding_needed // 2
+            right_pad = padding_needed - left_pad
+            padded_img = np.pad(img, ((0, 0), (left_pad, right_pad)), 'constant', constant_values=255)  # Assuming grayscale images
+            padded_images.append(padded_img)
         print(f'I am in process_batch function and the shape of the image is {res_imgs[0].shape}')
         max_text_len = res_imgs[0].shape[0] // 4
         res_gt_texts = [self._truncate_label(gt_text, max_text_len) for gt_text in batch.gt_texts]
-        return Batch(res_imgs, res_gt_texts, batch.batch_size)
+        return Batch(padded_images, res_gt_texts, batch.batch_size)
 
 
 def main():
